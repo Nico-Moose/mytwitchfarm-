@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Ферма + Twitch OAuth</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f6f6f8; padding: 30px; }
+    .farm-box { background: #fff; border-radius: 16px; box-shadow: 0 2px 16px #0002; padding: 32px 24px; max-width: 420px; margin: 0 auto; }
+    button { font-size: 1em; padding: 10px 22px; border-radius: 8px; border: none; background: #ffd96c; cursor: pointer; }
+    button:hover { background: #f7c842; }
+    #carrots, #xpBar, #upgradeInfo, #inventory { margin: 14px 0; }
+    #rewardCmd code { display: block; background: #f2f2ff; border-radius: 8px; padding: 8px 12px; font-size: 1.1em; margin: 8px 0 0 0;}
+    #rewardBtn { background: #5df97c; }
+    #rewardBtn[disabled] { background: #b0e1ba; color: #888; cursor: not-allowed; }
+    #userPanel { margin-bottom: 20px; text-align: center; }
+    #farm { display:none; }
+  </style>
+</head>
+<body>
+  <div class="farm-box">
+    <div id="userPanel">
+      <button onclick="twitchLogin()">Войти через Twitch</button>
+    </div>
+    <div id="farm">
+      <div id="carrots"></div>
+      <div id="xpBar"></div>
+      <div id="upgradeInfo"></div>
+      <select id="cropSelect">
+        <option value="carrot">Морковка</option>
+        <option value="potato" disabled>Картошка (ур.2)</option>
+        <option value="beet" disabled>Свёкла (ур.3)</option>
+      </select>
+      <div id="inventory"></div>
+      <button id="harvestBtn">Собрать урожай</button>
+      <button id="upgradeBtn">Улучшить ферму (10 урожая)</button>
+      <button id="rewardBtn" style="display:none;">Получить награду (+100 монет)</button>
+      <div id="rewardCmd"></div>
+    </div>
+  </div>
+
+  <script>
+  // ==== Twitch OAuth (замени CLIENT_ID!) ====
+  const CLIENT_ID = '3ho9x3jmybxctbgl2jm9ubn3tj0126'; // <-- вставь свой Twitch Client ID
+  const REDIRECT_URI = window.location.origin + window.location.pathname;
+
+  function twitchLogin() {
+    const scope = 'user:read:email';
+    const url = `https://id.twitch.tv/oauth2/authorize` +
+      `?client_id=${CLIENT_ID}` +
+      `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+      `&response_type=token` +
+      `&scope=${encodeURIComponent(scope)}`;
+    window.location = url;
+  }
+
+  function getAccessTokenFromUrl() {
+    if (window.location.hash.includes('access_token=')) {
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      return params.get('access_token');
+    }
+    return null;
+  }
+
+  async function getTwitchUser(token) {
+    const res = await fetch('https://api.twitch.tv/helix/users', {
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Client-Id': CLIENT_ID
+      }
+    });
+    const data = await res.json();
+    return data.data && data.data[0];
+  }
+
+  window.currentTwitchUser = null;
+
+  window.onload = async function() {
+    const token = getAccessTokenFromUrl();
+    if (token) {
+      window.location.hash = '';
+      const user = await getTwitchUser(token);
+      if (user) {
+        document.getElementById('userPanel').innerHTML =
+          `<b>Вы вошли как: ${user.display_name}</b> <button onclick="logout()">Выйти</button>`;
+        window.currentTwitchUser = user;
+        document.getElementById('farm').style.display = 'block';
+        initFarm(user.login);
+      }
+    } else {
+      document.getElementById('farm').style.display = 'none';
+    }
+  };
+
+  function logout() {
+    localStorage.clear();
+    location.href = REDIRECT_URI;
+  }
+
+  // ==== Ферма ====
+  // Настройки
+  const REWARD_THRESHOLD = 10;
+  const REWARD_AMOUNT = 100;
+  const SECRET_TOKEN = "mytoken"; // Замени на свой!
+  const XP_PER_HARVEST = 1;
+  const XP_FOR_LEVEL = 10;
+
+  function initFarm(username) {
+    // Персональные ключи для каждого игрока
+    function lsk(name, def) {
+      const key = `farm_${username}_${name}`;
+      return [key, localStorage.getItem(key) || def];
+    }
+    function setlsk(name, val) {
+      const key = `farm_${username}_${name}`;
+      localStorage.setItem(key, val);
+    }
+
+    // Состояние игрока
+    let carrots = Number(lsk('carrots', 0)[1]);
+    let rewardGiven = lsk('rewardGiven', 'false')[1] === 'true';
+    let xp = Number(lsk('xp', 0)[1]);
+    let level = Number(lsk('level', 1)[1]);
+    let upgradeLevel = Number(lsk('upgradeLevel', 1)[1]);
+    let inventory = JSON.parse(lsk('inventory', '{"carrot":0,"potato":0,"beet":0}')[1]);
+
+    function updateUI() {
+      document.getElementById('carrots').innerText = `Урожай: ${carrots}`;
+      document.getElementById('xpBar').innerText = `Опыт: ${xp} / ${XP_FOR_LEVEL} (Уровень: ${level})`;
+      document.getElementById('upgradeInfo').innerText = `Уровень фермы: ${upgradeLevel} (+${upgradeLevel} за сбор)`;
+      document.getElementById('cropSelect').options[1].disabled = level < 2;
+      document.getElementById('cropSelect').options[2].disabled = level < 3;
+      document.getElementById('inventory').innerText =
+        `Морковка: ${inventory.carrot} | Картошка: ${inventory.potato} | Свёкла: ${inventory.beet}`;
+
+      if (carrots >= REWARD_THRESHOLD && !rewardGiven) {
+        document.getElementById('rewardBtn').style.display = 'block';
+        document.getElementById('rewardBtn').disabled = false;
+        document.getElementById('rewardBtn').innerText = `Получить награду (+${REWARD_AMOUNT} монет)`;
+      } else if (rewardGiven) {
+        document.getElementById('rewardBtn').style.display = 'block';
+        document.getElementById('rewardBtn').disabled = true;
+        document.getElementById('rewardBtn').innerText = 'Награда уже получена!';
+      } else {
+        document.getElementById('rewardBtn').style.display = 'none';
+        document.getElementById('rewardBtn').disabled = false;
+        document.getElementById('rewardBtn').innerText = `Получить награду (+${REWARD_AMOUNT} монет)`;
+      }
+    }
+    updateUI();
+
+    document.getElementById('harvestBtn').onclick = () => {
+      let crop = document.getElementById('cropSelect').value;
+      inventory[crop] = (inventory[crop] || 0) + upgradeLevel;
+      carrots += upgradeLevel;
+      xp += XP_PER_HARVEST;
+      if (xp >= XP_FOR_LEVEL) {
+        level += 1;
+        xp = 0;
+        alert('Поздравляем! Новый уровень: ' + level);
+      }
+      setlsk('carrots', carrots);
+      setlsk('xp', xp);
+      setlsk('level', level);
+      setlsk('upgradeLevel', upgradeLevel);
+      setlsk('inventory', JSON.stringify(inventory));
+      updateUI();
+      document.getElementById('rewardCmd').innerHTML = '';
+    };
+
+    document.getElementById('upgradeBtn').onclick = () => {
+      if (carrots >= 10) {
+        carrots -= 10;
+        upgradeLevel += 1;
+        setlsk('carrots', carrots);
+        setlsk('upgradeLevel', upgradeLevel);
+        updateUI();
+      }
+    };
+
+    document.getElementById('rewardBtn').onclick = () => {
+      // Генерируем команду только на свой Twitch логин!
+      const cmd = `!farmreward ${username} ${REWARD_AMOUNT} ${SECRET_TOKEN}`;
+      document.getElementById('rewardCmd').innerHTML =
+        'Скопируй и вставь в чат Twitch:<br><code>' + cmd + '</code>';
+      rewardGiven = true;
+      setlsk('rewardGiven', 'true');
+      updateUI();
+    };
+  }
+  </script>
+</body>
+</html>
